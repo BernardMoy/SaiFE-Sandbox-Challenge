@@ -72,16 +72,17 @@ pip install -r requirements.txt    # Python 3.11+ (full sim + training stack)
    python experiments/hackathon_simulation.py --agent my_agent.py
    ```
 
-   ```
+   ```text
    Rank | Agent              | Kind       |       Mean |  Std |  Median |    Min |    Max | Profitable
    --------------------------------------------------------------------------------------------------
-      1 | my_agent           | submission |     +12.40 | 9.10 |  +10.05 | -14.21 | +38.6  |      78.0%   <- illustrative
-      2 | HoldToken0         | baseline   |      +7.91 | 9.93 |   +6.59 | -12.29 | +36.30 |      83.3%
-      3 | DeployOnceWide     | baseline   |      +5.53 | 7.78 |   +5.31 | -13.55 | +26.51 |      78.9%
+      1 | HoldToken0         | baseline   |     +24.42 | 22.47 |  +21.18 | -26.30 | +102.24 |      88.3%
+      2 | DeployOnceWide     | baseline   |     +21.47 | 18.95 |  +20.45 | -17.16 |  +80.40 |      87.7%
+      3 | my_agent           | submission |    -201.92 | 38.48 | -202.59 | -329.74 | -92.76 |       0.0%
    ```
 
    A leaderboard CSV is written to `experiments/results/hackathon_leaderboard.csv`.
-   (Baseline numbers above are real; `my_agent` is an illustrative target to beat.)
+   The example above is what you should expect if `my_agent.py` is still just a
+   copy of the starter template.
 
 ## The submission contract
 
@@ -265,14 +266,15 @@ your job is to earn fees without bleeding them back out in gas and adverse selec
 - **Width is a dial.** Tighter bands earn more fees per dollar but leave range
   sooner; find the width that survives `volatility = 0.009`.
 - **Train offline, ship numpy.** You may train an RL policy (see below), but the
-  sandbox only runs numpy — distill the learned policy into numpy literals.
+  grader only accepts numpy-only submissions — distill the learned policy into
+  numpy literals.
 
 ## Architecture
 
-```
-SAiFE_gym/
+```text
+concentrator-challenge/
 ├── SAiFE_gym/
-│   ├── challenge.py                  # OFFICIAL scenario config + submission contract
+│   ├── challenge.py                  # Official scenario config + submission contract
 │   ├── agents/
 │   │   ├── Agent.py                  # Abstract base class
 │   │   ├── BaselineAgents.py         # Hold/DeployOnce/FullRange/Arrival/Random baselines
@@ -286,14 +288,14 @@ SAiFE_gym/
 │   ├── rewards/
 │   │   └── RewardFunctions.py        # PnL, ExponentialUtility, RunningInventoryPenalty
 │   └── stochastic_processes/
-│       ├── midprice_models.py        # Brownian, GBM, Ornstein–Uhlenbeck
+│       ├── midprice_models.py        # Brownian, GBM, Ornstein-Uhlenbeck
 │       └── arrival_models.py         # Poisson, PoissonLinear, LiquidityKernel, PoissonNonLinear
 ├── experiments/
-│   ├── hackathon_simulation.py       # The challenge evaluation harness + leaderboard
+│   ├── hackathon_simulation.py       # Challenge evaluation harness + leaderboard
 │   ├── agent_comparison.py           # Baseline comparison plots
 │   └── helpers.py                    # Env factory, SB3 wrap, PPO trainer, rollout helper
 ├── tests/                            # pytest regression suite
-└── submission_template.py            # Pure-numpy Agent starter — copy this
+└── submission_template.py            # Pure-numpy Agent starter; copy this
 ```
 
 Run the test suite with `pytest`. SAiFE_gym is **fully vectorized**: every core
@@ -303,9 +305,9 @@ component batches over `num_trajectories`, so prefer NumPy array ops (`np.where`
 ## Advanced: training an RL policy
 
 The environment is a standard Gymnasium env, so you can train with
-Stable-Baselines3. Remember the sandbox runs **numpy only** — you must export the
-trained policy's weights and reimplement the forward pass in numpy in your
-submission file.
+Stable-Baselines3. Remember the grader accepts **numpy-only** submissions — you
+must export the trained policy's weights and reimplement the forward pass in
+numpy in your submission file.
 
 ```python
 from experiments.helpers import get_amm_env, get_ppo_learner_and_callback
