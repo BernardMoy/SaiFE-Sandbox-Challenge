@@ -1,127 +1,79 @@
 """
-The Concentrator — submission template.
+The Concentrator — CMA-ES trained policy.
 
-Copy this file, rename nothing (the grader looks for a top-level class named
-``Agent``, or any class whose name ends in ``Agent``), and replace the body of
-``get_action`` with your own liquidity-provision strategy.
+A tiny numpy-only MLP (5 -> 8 -> 3, tanh activations) maps a 5-feature
+observation to the [lower_offset, upper_offset, hold_flag] action.
 
----------------------------------------------------------------------------
-GRADER RULES
----------------------------------------------------------------------------
-• Your submission is ONE Python file, delivered as source. No companion files.
-• The ONLY third-party dependency you can rely on is numpy.
-    - The grader rejects imports other than numpy.
-    - You also CANNOT import SAiFE_gym; use the raw string state keys below.
-• NO file I/O: open() and obvious NumPy file-loading calls are blocked.
-    - To ship a *trained* policy, inline its weights as numpy literals in this
-      file (the grader cannot load a torch model or any weights file).
-• The whole file must be ≤ 64 KB of source.
-• Per-step and per-episode time limits apply — keep `get_action` cheap and
-  vectorized (operate on whole arrays, never Python loops over trajectories).
+Inputs (per trajectory):
+    0: mispricing_norm = (midprice - sqrt_price**2) / midprice
+    1: lower_dist       = (current_tick - lp_tick_lower) / tau
+    2: upper_dist       = (lp_tick_upper - current_tick) / tau
+    3: time_left        = 1 - time / terminal_time
+    4: gas_frac         = clip(gas_cost / portfolio_value, 0, 10)
 
----------------------------------------------------------------------------
-THE CONTRACT
----------------------------------------------------------------------------
-__init__(self, config):
-    `config` is a read-only namespace of scalars describing the episode (NOT
-    the live environment — you can't see the RNG/seed or the future). Fields:
-        num_trajectories, n_steps, terminal_time, step_size, initial_wealth,
-        tau, num_ticks, exponential_value, fee_tier, gas_cost, swap_fee_rate,
-        drift, volatility
-    Access as `config.tau`, `config.gas_cost`, etc. Use getattr fallbacks to stay
-    robust if a field is ever absent.
+Outputs -> action:
+    lower_offset = tau * tanh(out[0])
+    upper_offset = tau * tanh(out[1])
+    hold_flag    = tanh(out[2]), forced to -1 until lp_ever_deployed (forces
+                   the initial deployment regardless of the network output).
 
-get_action(self, state) -> np.ndarray of shape (num_trajectories, 3):
-    Called once per step. `state` is a dict of numpy arrays (one row per
-    trajectory). The useful scalar keys:
-        "sqrt_price"        √P of the pool  (so pool price P = sqrt_price ** 2)
-        "current_tick"      pool's current integer tick
-        "midprice"          external market price (your fair value)
-        "time"              elapsed simulation time
-        "lp_tick_lower"     your position's lower tick bound (absolute)
-        "lp_tick_upper"     your position's upper tick bound (absolute)
-        "lp_ever_deployed"  bool — False until you first deploy
-        "gas_cost"          cost charged per rebalance
-        "portfolio_value"   your current mark-to-market wealth
-    Return one action per trajectory: [lower_offset, upper_offset, hold_flag]
-        lower_offset, upper_offset : tick bounds RELATIVE to current_tick,
-            in [-tau, tau]. Must satisfy lower_offset < upper_offset.
-            (The engine rounds them to integers and clips them to the box for you.)
-        hold_flag : <= 0  → rebalance into [current_tick+lower, current_tick+upper]
-                    >  0  → hold the existing position (no gas this step)
-
-The engine rounds/clips the two offsets, but it reads hold_flag by SIGN only —
-so keep it in [-1, 1] yourself.
+Weights were trained with CMA-ES against the official scenario, optimizing
+mean final wealth minus HoldToken0Agent's final wealth on matched price paths
+(common random numbers for variance reduction).
 """
 
 import numpy as np
 
 
 class Agent:
-    """
-    Full-width, lazy-recenter LP strategy with asymmetric exit handling.
+    W1 = np.array([
+        [1.04284612, 1.53483016, -0.98335326, 1.27855701, -1.86317237, 2.07473887, 1.41323260, 0.66841369],
+        [2.88619831, 2.36357922, -1.21112701, 1.22024561, -0.80115612, -1.54074461, -3.52214261, 1.01840152],
+        [0.74298122, -0.94262317, -1.38581890, -1.03653021, 2.79946305, -0.13616075, -0.17541032, 2.90349900],
+        [1.62848950, -0.20097571, 0.36874418, 0.34276873, -1.74345902, 1.42151246, 3.31623013, 1.11109587],
+        [-0.27546138, -0.03523670, 0.86344354, 1.76250661, -1.66141541, 2.40135092, 1.39200512, 2.39216475],
+    ])
+    b1 = np.array([1.09315239, 2.58789300, -1.72457793, 1.31841259, -0.47010095, 0.53250057, 0.96225347, 0.86738946])
 
-    - Deploys a band spanning the full [-tau, +tau] window around the
-      current tick: maximum width => maximum time in range => maximum
-      passive fee income => minimum forced rebalances.
-    - Holds (no gas) whenever the position is still in range.
-    - On a downside exit (price fell below the band), keeps holding: the
-      position is now 100% token0, so it tracks the external price like a
-      HODL position from here on, on top of whatever fees were already
-      earned while in range.
-    - On an upside exit (price rose above the band), the position is frozen
-      as 100% token1 (cash) and stops tracking price entirely. Rebalance
-      (recenter the full-width band on the current tick) to escape that
-      trap and resume both price tracking and fee accrual -- but only if
-      there's enough remaining time to plausibly earn back the gas, and not
-      sooner than `cooldown_steps` after the previous rebalance (avoids
-      being whipsawed by a run of upside exits during a sustained uptrend).
-    """
+    W2 = np.array([
+        [0.68092012, -2.35190575, 2.26558691],
+        [1.92559368, -0.34288254, 1.60942597],
+        [1.26748929, 1.48739543, 2.39495789],
+        [-0.81649930, -1.02439136, -0.17519897],
+        [-0.23693361, -0.13725853, -1.28956224],
+        [-2.24259734, -0.43026700, -0.76101243],
+        [-0.52105891, -2.08654669, 1.08247565],
+        [-1.12405894, -0.44469774, 4.12957587],
+    ])
+    b2 = np.array([-4.05948154, 3.20847288, 0.38357976])
 
     def __init__(self, config):
-        self.tau = int(getattr(config, "tau", 10))
+        self.tau = float(getattr(config, "tau", 10))
+        self.terminal_time = float(getattr(config, "terminal_time", 1.0))
 
-        terminal_time = float(getattr(config, "terminal_time", 1.0))
-        n_steps = int(getattr(config, "n_steps", 1000))
-        step_size = float(getattr(config, "step_size", terminal_time / n_steps))
-        self.terminal_time = terminal_time
-
-        # Stop chasing upside exits once fewer than this many steps remain --
-        # not enough runway left to earn back the gas cost via renewed
-        # tracking/fees.
-        min_steps_remaining = max(1, int(0.05 * n_steps))
-        self.time_left_floor = min_steps_remaining * step_size
-
-        # Minimum number of steps between rebalances, so a sustained run of
-        # upside exits during a trend doesn't trigger a rebalance every step.
-        self.cooldown_steps = max(1, int(0.005 * n_steps))
-
-        self._cooldown = None  # lazily-sized per-trajectory counters
-
-    def get_action(self, state):
-        current_tick = state["current_tick"]
-        n = current_tick.shape[0]
-
-        lp_upper = state["lp_tick_upper"]
-        ever_deployed = state.get("lp_ever_deployed", np.zeros(n, dtype=bool))
+    def get_action(self, state: dict) -> np.ndarray:
+        midprice = state["midprice"]
+        sqrt_price = state["sqrt_price"]
+        current_tick = state["current_tick"].astype(np.float64)
+        lp_lower = state["lp_tick_lower"].astype(np.float64)
+        lp_upper = state["lp_tick_upper"].astype(np.float64)
         time = state["time"]
+        gas = state["gas_cost"]
+        portfolio_value = state["portfolio_value"]
+        ever_deployed = state["lp_ever_deployed"]
 
-        if self._cooldown is None:
-            self._cooldown = np.zeros(n, dtype=np.int64)
+        mispricing_norm = (midprice - sqrt_price ** 2) / midprice
+        lower_dist = (current_tick - lp_lower) / self.tau
+        upper_dist = (lp_upper - current_tick) / self.tau
+        time_left = 1.0 - time / self.terminal_time
+        gas_frac = np.clip(gas / np.maximum(portfolio_value, 1e-3), 0.0, 10.0)
 
-        not_deployed = ~ever_deployed
-        upside_exit = ever_deployed & (current_tick >= lp_upper)
+        x = np.column_stack([mispricing_norm, lower_dist, upper_dist, time_left, gas_frac])
+        h = np.tanh(x @ self.W1 + self.b1)
+        out = np.tanh(h @ self.W2 + self.b2)
 
-        time_left = self.terminal_time - time
-        can_afford = (time_left > self.time_left_floor) & (self._cooldown >= self.cooldown_steps)
+        lower = self.tau * out[:, 0]
+        upper = self.tau * out[:, 1]
+        hold = np.where(ever_deployed, out[:, 2], -1.0)
 
-        rebalance = not_deployed | (upside_exit & can_afford)
-
-        self._cooldown = np.where(rebalance, 0, self._cooldown + 1)
-
-        hold_flag = np.where(rebalance, -1.0, 1.0)
-
-        lower = np.full(n, -self.tau, dtype=np.float64)
-        upper = np.full(n, self.tau, dtype=np.float64)
-
-        return np.column_stack([lower, upper, hold_flag])
+        return np.column_stack([lower, upper, hold])
