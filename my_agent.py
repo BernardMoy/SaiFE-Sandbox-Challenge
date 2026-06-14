@@ -20,12 +20,27 @@ Outputs -> action:
 Weights were trained with CMA-ES against the official scenario, optimizing
 mean final wealth minus HoldToken0Agent's final wealth on matched price paths
 (common random numbers for variance reduction).
+
+A small heuristic overlay is applied on top of the network output:
+  1. Skew the band toward the side arbitrage will push the price (sign of
+     mispricing_norm), by SKEW_TICKS.
+  2. Once price breaks out above the band, hold the frozen position instead
+     of immediately recentering, unless the breakout exceeds
+     UPSIDE_BREACH_TICKS or has persisted for UPSIDE_BREACH_STEPS steps.
+  3. Scale the band width by WIDTH_SCALE, narrower early in the episode and
+     full width later on.
 """
 
 import numpy as np
 
 
 class Agent:
+    SKEW_TICKS = 2.0
+    UPSIDE_BREACH_TICKS = 2.0
+    UPSIDE_BREACH_STEPS = 5.0
+    EARLY_WIDTH_SCALE = 0.7
+    LATE_WIDTH_SCALE = 1.0
+
     W1 = np.array([
         [1.04284612, 1.53483016, -0.98335326, 1.27855701, -1.86317237, 2.07473887, 1.41323260, 0.66841369],
         [2.88619831, 2.36357922, -1.21112701, 1.22024561, -0.80115612, -1.54074461, -3.52214261, 1.01840152],
@@ -50,6 +65,7 @@ class Agent:
     def __init__(self, config):
         self.tau = float(getattr(config, "tau", 10))
         self.terminal_time = float(getattr(config, "terminal_time", 1.0))
+        self._upside_streak = None
 
     def get_action(self, state: dict) -> np.ndarray:
         midprice = state["midprice"]
@@ -75,5 +91,30 @@ class Agent:
         lower = self.tau * out[:, 0]
         upper = self.tau * out[:, 1]
         hold = np.where(ever_deployed, out[:, 2], -1.0)
+
+        # 1. Skew the band toward the side arbitrage will push the price.
+        skew = self.SKEW_TICKS * np.sign(mispricing_norm)
+        lower = lower + skew
+        upper = upper + skew
+
+        # 3. Narrower bands early in the episode, full width later on.
+        width_scale = self.LATE_WIDTH_SCALE - (self.LATE_WIDTH_SCALE - self.EARLY_WIDTH_SCALE) * time_left
+        lower = lower * width_scale
+        upper = upper * width_scale
+
+        # 2. Don't immediately recenter on an upside breakout; wait until it
+        # is large enough or has persisted for several steps.
+        if self._upside_streak is None or self._upside_streak.shape[0] != current_tick.shape[0]:
+            self._upside_streak = np.zeros(current_tick.shape[0])
+        breakout = current_tick - lp_upper
+        self._upside_streak = np.where(breakout > 0, self._upside_streak + 1.0, 0.0)
+
+        suppress = (
+            ever_deployed
+            & (breakout > 0)
+            & (breakout < self.UPSIDE_BREACH_TICKS)
+            & (self._upside_streak < self.UPSIDE_BREACH_STEPS)
+        )
+        hold = np.where(suppress, 1.0, hold)
 
         return np.column_stack([lower, upper, hold])
