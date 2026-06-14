@@ -21,7 +21,7 @@ prompts/
 .trees/
 
 # Generated artifacts (plots, experiment outputs)
-figures/
+# figures/
 experiments/results/
 results/
 notebooks/results/

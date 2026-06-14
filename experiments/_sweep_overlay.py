@@ -7,7 +7,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 import numpy as np
 
 from SAiFE_gym.challenge import ScenarioConfig, create_environment
-import my_agent
+import implementations.cma_es as cma_es
 
 PRACTICE_SEEDS = [42, 314, 2718]
 
@@ -29,7 +29,7 @@ def evaluate(skew, breach_ticks, breach_steps, early_scale, late_scale):
     pnls = []
     for seed in PRACTICE_SEEDS:
         env = create_environment(config, seed)
-        agent = my_agent.Agent(ns)
+        agent = cma_es.Agent(ns)
         agent.SKEW_TICKS = skew
         agent.UPSIDE_BREACH_TICKS = breach_ticks
         agent.UPSIDE_BREACH_STEPS = breach_steps
